@@ -14,7 +14,7 @@
 # limitations under the License.
 #
 import flask
-from flask import Flask, request
+from flask import Flask, request, redirect
 from flask_sockets import Sockets
 from flask_cors import CORS
 import gevent
@@ -24,16 +24,18 @@ import json
 import os
 
 app = Flask(__name__)
+CORS(app)
 sockets = Sockets(app)
 app.debug = True
-CORS(app)
+noUpdate = True
+
 
 class World:
     def __init__(self):
         self.clear()
         # we've got listeners now!
         self.listeners = list()
-        
+
     def add_set_listener(self, listener):
         self.listeners.append( listener )
 
@@ -57,16 +59,25 @@ class World:
 
     def get(self, entity):
         return self.space.get(entity,dict())
-    
+
     def world(self):
         return self.space
 
-myWorld = World()        
+myWorld = World()
 
 def set_listener( entity, data ):
     ''' do something with the update ! '''
 
 myWorld.add_set_listener( set_listener )
+clients = list()
+
+def send_all_json(obj):
+    send_all( json.dumps(obj) )
+
+def send_all(msg):
+    for client in clients:
+        client.put( msg )
+
 
 class Client:
     def __init__(self):
@@ -77,7 +88,7 @@ class Client:
 
     def get(self):
         return self.queue.get()
-        
+
 @app.route('/')
 def hello():
     '''Return something coherent here.. perhaps redirect to /static/index.html '''
@@ -90,8 +101,11 @@ def read_ws(ws,client):
             msg = ws.receive()
             print("WS RECV: %s" % msg)
             if (msg is not None):
-                packet = json.loads(msg)
-                send_all_json( packet )
+                if msg != "{\"subscribe\":\"True\"}":
+                    msg = json.loads(msg)
+                    for entity in msg:
+                        myWorld.set(entity, msg[entity])
+                send_all_json(myWorld.world())
             else:
                 break
     except:
@@ -101,15 +115,15 @@ def read_ws(ws,client):
 def subscribe_socket(ws):
     '''Fufill the websocket URL of /subscribe, every update notify the
        websocket and read updates from the websocket '''
+    global noUpdate
+    cacheWorld = myWorld.world()
     client = Client()
     clients.append(client)
-    g = gevent.spawn( read_ws, ws, client )    
+    g = gevent.spawn( read_ws, ws, client )
     print("Subscribing")
     try:
         while True:
-            # block here
             msg = client.get()
-            print("Got a message!")
             ws.send(msg)
     except Exception as e:# WebSocketError as e:
         print("WS Error %s" % e)
@@ -133,29 +147,31 @@ def flask_post_json():
 @app.route("/entity/<entity>", methods=['POST','PUT'])
 def update(entity):
     '''update the entities via this interface'''
+    global noUpdate
     print("Adding Entity")
     v = flask_post_json()
     myWorld.set( entity, v )
-    e = myWorld.get(entity)    
+    e = myWorld.get(entity)
+    noUpdate = False
     return json.dumps( e )
 
-@app.route("/world", methods=['POST','GET'])    
+@app.route("/world", methods=['POST','GET'])
 def world():
     '''you should probably return the world here'''
-    e = myWorld.world()  
+    e = myWorld.world()
     return json.dumps( e )
 
-@app.route("/entity/<entity>")    
+@app.route("/entity/<entity>")
 def get_entity(entity):
     '''This is the GET version of the entity interface, return a representation of the entity'''
-    e = myWorld.get(entity)    
+    e = myWorld.get(entity)
     return json.dumps( e )
 
 @app.route("/clear", methods=['POST','GET'])
 def clear():
     '''Clear the world out!'''
     myWorld.clear()
-    e = myWorld.world()    
+    e = myWorld.world()
     return json.dumps( e )
 
 
